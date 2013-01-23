@@ -1,0 +1,11 @@
+/* CSS file */
+@namespace s "library://ns.adobe.com/flex/spark";
+@namespace mx "library://ns.adobe.com/flex/halo";
+
+
+global
+{
+	focusColor: #E7E7E7;
+	selectionColor: #E8E8E8;
+	rollOverColor: #F2F2F2;
+}

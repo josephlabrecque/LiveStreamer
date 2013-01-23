@@ -1,0 +1,359 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:WindowedApplication xmlns:fx="http://ns.adobe.com/mxml/2009" 
+					   xmlns:s="library://ns.adobe.com/flex/spark" 
+					   xmlns:mx="library://ns.adobe.com/flex/mx" 
+					   applicationComplete="init()" displayStateChange="displayChangeHandler(event)" 
+					   windowResize="resizeHandler()" 
+					   width="720" height="480" showStatusBar="false" backgroundColor="0x000000" currentState="InputStreamURL">
+	
+	<fx:Style source="LiveStreamer.css"/>
+	
+	
+	<fx:Script>
+		<![CDATA[
+			import adobe.utils.ProductManager;
+			import mx.core.UIComponent;
+			import air.update.ApplicationUpdaterUI;
+			import air.update.events.UpdateEvent;
+			
+			import flash.desktop.Clipboard;
+			import flash.desktop.ClipboardFormats;
+			import flash.desktop.NativeDragActions;
+			import flash.desktop.NativeDragManager;
+			import flash.display.NativeMenu;
+			import flash.display.NativeMenuItem;
+			import flash.display.Stage;
+			import flash.display.StageDisplayState;
+			import flash.events.ErrorEvent;
+			import flash.events.Event;
+			import flash.events.NativeDragEvent;
+			import flash.events.NetStatusEvent;
+			import flash.filesystem.File;
+			import flash.filesystem.FileMode;
+			import flash.filesystem.FileStream;
+			import flash.geom.Rectangle;
+			import flash.media.Video;
+			import flash.net.NetConnection;
+			import flash.net.NetStream;
+			import flash.net.URLRequest;
+			import flash.net.navigateToURL;
+			import flash.system.System;
+			
+			import mx.core.FlexGlobals;
+			import mx.core.IVisualElement;
+			import mx.core.WindowedApplication;
+			
+			private var liveConnection:NetConnection;
+			private var liveStream:NetStream;
+			private var staticConnection:NetConnection;
+			private var staticStream:NetStream;
+			private var appPath:String;
+			private var filePath:String;
+			private var liveVideo:Video;
+			private var streamWidth:int;
+			private var streamHeight:int;
+			private var xmlFile:File;
+			private var xmlStream:FileStream;
+			private var appUpdater:ApplicationUpdaterUI;
+			private var playMode:String;
+			private var liveMenu:NativeMenu;
+			
+			private function init():void {
+				playMode = "";
+				
+				this.addEventListener(NativeDragEvent.NATIVE_DRAG_ENTER, onDragEnter);
+				this.addEventListener(NativeDragEvent.NATIVE_DRAG_DROP, onDragDrop);
+				this.addEventListener(NativeDragEvent.NATIVE_DRAG_EXIT, onDragExit);
+				
+				appUpdater = new ApplicationUpdaterUI();
+				staticConnection = new NetConnection()
+				
+				liveConnection = new NetConnection();
+				liveConnection.client = this;
+				liveConnection.addEventListener(NetStatusEvent.NET_STATUS, netStatusHandler);
+				
+				liveVideo = new Video();
+				liveVideo.smoothing = true;
+				
+				appUpdater = new ApplicationUpdaterUI();
+				versionDisplay.text = getAppVersion();	
+				createMenu();
+				readSavedStream();
+				doUpdateCheck();
+				
+				trace(NativeApplication.nativeApplication.publisherID);
+				//rtmp://flashmedia2.du.edu/live/mp4:ctl323.mp4
+				//http://ctl.du.edu/staff/josephlabrecque/Generator/Generator.mp4
+			}
+			
+			private function createMenu():void {
+				liveMenu = new NativeMenu();
+				
+				var menuItemF:NativeMenuItem = new NativeMenuItem("FullScreen");
+				menuItemF.addEventListener(Event.SELECT, goFull);
+				liveMenu.addItem(menuItemF);
+				
+				//var menuItemS:NativeMenuItem = new NativeMenuItem("Stats");
+			//	menuItemS.addEventListener(Event.SELECT, toggleStats);
+				//liveMenu.addItem(menuItemS);
+				
+				var menuItemR:NativeMenuItem = new NativeMenuItem("Reset");
+				menuItemR.addEventListener(Event.SELECT, cleanup);
+				liveMenu.addItem(menuItemR);
+				
+				var menuItemQ:NativeMenuItem = new NativeMenuItem("Quit");
+				menuItemQ.addEventListener(Event.SELECT, goQuit);
+				liveMenu.addItem(menuItemQ);
+				
+				var menuSeparator1:NativeMenuItem =new NativeMenuItem("", true);
+				liveMenu.addItem(menuSeparator1);
+				
+				var menuItemA1:NativeMenuItem = new NativeMenuItem("©2009 Joseph Labrecque - v." + getAppVersion());
+				menuItemA1.addEventListener(Event.SELECT, goJoseph);
+				liveMenu.addItem(menuItemA1);
+				
+				this.contextMenu = liveMenu;
+				
+				//createStats();//statsGroup
+			}
+			
+			private function createStats():void {
+				var wrapper:UIComponent = new UIComponent();
+				wrapper.addChild(new Stats());
+				statsGroup.addElement(wrapper);
+			}
+			
+			private function toggleStats(e:Event):void {
+				if(statsGroup.visible){
+					statsGroup.visible = false;
+				} else {
+					statsGroup.visible = true;
+				}
+			}
+			
+			private function doUpdateCheck():void {
+				appUpdater.updateURL = "http://ctl.du.edu/staff/josephlabrecque/LiveStreamer/update.xml";
+				appUpdater.addEventListener(UpdateEvent.INITIALIZED, onUpdate);
+				appUpdater.addEventListener(ErrorEvent.ERROR, onError);
+				appUpdater.isCheckForUpdateVisible = false;
+				appUpdater.initialize();
+			}
+			private function onUpdate(e:UpdateEvent):void {
+				appUpdater.removeEventListener(UpdateEvent.INITIALIZED, onUpdate);
+				appUpdater.checkNow();
+			}
+			private function onError(e:ErrorEvent):void {
+				appUpdater.removeEventListener(ErrorEvent.ERROR, onError);
+			}
+			
+			private function readSavedStream():void {
+				xmlFile = File.applicationStorageDirectory;
+				xmlFile = xmlFile.resolvePath("streamconfig.xml");
+				if(xmlFile.exists){
+					xmlStream = new FileStream();
+					xmlStream.open(xmlFile, FileMode.READ);
+					StreamURL.text = xmlStream.readUTFBytes(xmlFile.size);
+					xmlStream.close();
+				}
+			}
+			
+			private function writeSavedStream():void {
+				xmlFile = File.applicationStorageDirectory;
+				xmlFile = xmlFile.resolvePath("streamconfig.xml");
+				xmlStream = new FileStream();
+				xmlStream.open(xmlFile, FileMode.WRITE);
+				xmlStream.writeUTFBytes(StreamURL.text);
+				xmlStream.close();
+			}
+			
+			
+			
+			
+			private function testStream():void {
+				if(StreamURL.text.charAt(0) == "r"){
+					playMode = "rtmp";
+					var initialSlash:int = StreamURL.text.indexOf("/", 10);
+					var secondarySlash:int = StreamURL.text.indexOf("/", initialSlash+1);
+					appPath = StreamURL.text.substring(0,secondarySlash);
+					filePath = StreamURL.text.substring(secondarySlash+1);
+					liveConnection.connect(appPath);
+				}else if(StreamURL.text.charAt(0) == "h"){
+					playMode = "http";
+					filePath = StreamURL.text;
+					staticConnection.connect(null);
+					streamVideo();
+				}else{
+					playMode = "local";
+					filePath = StreamURL.text;
+					staticConnection.connect(null);
+					streamVideo();
+				}
+				
+				writeSavedStream();
+			}
+			
+			private function streamVideo():void {
+				if(playMode == "rtmp"){
+					liveStream = new NetStream(liveConnection);
+					liveStream.addEventListener(NetStatusEvent.NET_STATUS, netStatusHandler);
+					liveStream.client = this;
+					liveStream.play(filePath);
+					liveVideo.attachNetStream(liveStream);
+				}else if(playMode == "http" || playMode == "local"){
+					currentState = "DisplayStream";
+					staticStream = new NetStream(staticConnection);
+					staticStream.addEventListener(NetStatusEvent.NET_STATUS, netStatusHandler);
+					staticStream.client = this;
+					staticStream.play(filePath);
+					liveVideo.attachNetStream(staticStream);
+				}
+			}
+			
+
+			
+			
+			
+			private function netStatusHandler(e:NetStatusEvent):void {
+				trace(e.info.code);
+				switch(e.info.code){
+					case "NetConnection.Connect.Success":
+						StreamPanel.title = "Enter Stream URL";
+						currentState = "DisplayStream";
+						streamVideo();
+						break;
+					case "NetConnection.Connect.Failed":
+						StreamPanel.title = "Invalid Server Address! - Better Double-Check!!!";
+						break;
+					case "NetStream.Play.Start":
+						videoHolder.rawChildren.addChild(liveVideo);
+						goFull();
+						break;
+					case "NetStream.Play.StreamNotFound":
+						currentState = "DisplayStream";
+						tryBtn.visible = true;
+						break;
+				}
+			}
+			
+			
+			
+			
+			
+			private function displayChangeHandler(e:NativeWindowDisplayStateEvent):void{}
+			
+			private function resizeHandler():void {
+				if(currentState == "DisplayStream"){
+					
+					liveVideo.width = streamHeight;
+					liveVideo.height = streamWidth;
+					
+					
+					liveVideo.height = liveVideo.stage.nativeWindow.bounds.height;
+					liveVideo.scaleX = liveVideo.scaleY;
+					
+					if(liveVideo.width > liveVideo.stage.nativeWindow.bounds.width){
+						liveVideo.width = liveVideo.stage.nativeWindow.bounds.width;
+						liveVideo.scaleY = liveVideo.scaleX;
+					}
+					liveVideo.x = 0-(liveVideo.width/2);
+					liveVideo.y = 0-(liveVideo.height/2);
+				}
+				
+			}
+			private function getAppVersion():String {
+				var appXml:XML = NativeApplication.nativeApplication.applicationDescriptor;
+				var ns:Namespace = appXml.namespace();
+				var appVersion:String = appXml.ns::version[0];
+				return appVersion;
+			}
+			
+			
+			
+			
+			public function onTextData(...args):void {}
+			public function onBWDone(...args):void {}
+			public function onMetaData(...args):void {
+				streamHeight = args[0].height;
+				streamWidth = args[0].width;
+				tryBtn.visible = false;
+			}
+			
+			
+			
+			
+			
+			private function goFull(...args):void {
+				if(stage.displayState == StageDisplayState.FULL_SCREEN_INTERACTIVE){
+					stage.displayState = StageDisplayState.NORMAL;
+				}else{
+					stage.displayState = StageDisplayState.FULL_SCREEN_INTERACTIVE;
+				}
+				resizeHandler();
+			}
+			private function goJoseph(...args):void {
+				navigateToURL(new URLRequest("http://portfolio.du.edu/jlabrecq"));
+			}
+			private function goQuit(...args):void {
+				this.close();
+			}
+			
+			
+			private function onDragEnter(e:NativeDragEvent):void {
+				NativeDragManager.acceptDragDrop(this);
+			}
+			private function onDragDrop(e:NativeDragEvent):void {
+				cleanup();
+				var dropfiles:Array = e.clipboard.getData(ClipboardFormats.FILE_LIST_FORMAT) as Array;
+				for each (var file:File in dropfiles){
+					StreamURL.text = file.url;
+				}
+			}
+			private function onDragExit(e:NativeDragEvent):void {
+				trace("exit");
+			}
+			
+			private function cleanup(...args):void {
+				stage.displayState = StageDisplayState.NORMAL;
+				if(currentState == "DisplayStream"){
+					if(videoHolder.rawChildren.numChildren > 0){
+						videoHolder.rawChildren.removeChild(liveVideo);
+						liveVideo.clear();
+					}
+					currentState = "InputStreamURL";
+				}
+				if(playMode != ""){
+					if(playMode == "rtmp"){
+						liveStream.close();
+						liveConnection.close();
+					}else{
+						staticStream.close();
+					}
+				}
+			}
+		]]>
+	</fx:Script>
+	
+	<s:states>
+		<s:State name="InputStreamURL"/>
+		<s:State name="DisplayStream"/>
+	</s:states>
+	
+	<mx:Image source="@Embed('assets/skin.png')" left="0" right="0" top="0" bottom="0" maintainAspectRatio="false"/>
+	<s:Label id="versionDisplay" textAlign="right" color="#522D2D" right="20" top="20"/>
+	<s:Panel id="StreamPanel" includeIn="InputStreamURL" width="402" height="130" title="Enter Stream URL" horizontalCenter="0" verticalCenter="50">
+		<mx:Form x="0" y="0" width="100%" height="100%">
+			<mx:FormItem label="URL" width="350" height="40">
+				<s:TextInput id="StreamURL" text="" width="100%"/>
+			</mx:FormItem>
+			<s:Button label="Begin Stream" click="testStream()"/>
+		</mx:Form>
+	</s:Panel>
+	<mx:Canvas includeIn="DisplayStream" id="videoBG" backgroundColor="#000000" right="0" left="0" top="0" bottom="0"/>
+	<mx:Canvas includeIn="DisplayStream" id="videoHolder" backgroundColor="#000000" horizontalCenter="0" verticalCenter="0"/>
+	<s:Button id="tryBtn" visible="false" includeIn="DisplayStream" horizontalCenter="0" verticalCenter="50" width="240" height="60" label="Bad Connection? Try Again!" click="cleanup()" fontWeight="bold" fontSize="15" focusColor="#777777" alpha="0.8"/>
+	<s:Label includeIn="InputStreamURL" text="Right-click for options" horizontalCenter="0" verticalCenter="150" color="#A8A8A8"/>
+	
+	<s:Group id="statsGroup" x="10" y="10" width="200" height="200" visible="false">
+	</s:Group>
+	
+</s:WindowedApplication>
